@@ -141,63 +141,31 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({
     setErrorMsg(null);
 
     try {
-      let verifyJson: any = null;
-      try {
-        const verifyRes = await fetch('/api/payments/verify', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            fullName: formData.fullName,
-            email: formData.email,
-            phone: formData.phone,
-            caLevel: formData.caLevel,
-            attemptDetails: formData.attemptDetails,
-            batchId: formData.batchId,
-            amount: currentBatchObj?.fee || 999,
-            razorpay_payment_id: paymentId,
-            razorpay_order_id: orderId,
-            razorpay_signature: signature,
-          }),
-        });
-        if (verifyRes.ok) {
-          verifyJson = await verifyRes.json();
-        }
-      } catch (e) {
-        console.warn('Verify API unreachable, falling back to client success payload:', e);
+      const verifyRes = await fetch('/api/payments/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          fullName: formData.fullName,
+          email: formData.email,
+          phone: formData.phone,
+          caLevel: formData.caLevel,
+          attemptDetails: formData.attemptDetails,
+          batchId: formData.batchId,
+          amount: currentBatchObj?.fee || 999,
+          razorpay_payment_id: paymentId,
+          razorpay_order_id: orderId,
+          razorpay_signature: signature,
+        }),
+      });
+
+      if (!verifyRes.ok) {
+        const errData = await verifyRes.json().catch(() => ({}));
+        throw new Error(errData.error || 'Payment verification failed on server.');
       }
 
+      const verifyJson = await verifyRes.json();
       if (!verifyJson || !verifyJson.success) {
-        const fallbackRegId = `reg-${Date.now().toString(36)}`;
-        const fallbackStudentId = `stu-${Date.now().toString(36)}`;
-        verifyJson = {
-          success: true,
-          registration: {
-            id: fallbackRegId,
-            student_id: fallbackStudentId,
-            batch_id: formData.batchId,
-            status: 'confirmed',
-            amount_paid: currentBatchObj?.fee || 999,
-            payment_status: 'paid',
-            whatsapp_link_sent: true,
-            created_at: new Date().toISOString(),
-          },
-          student: {
-            id: fallbackStudentId,
-            name: formData.fullName,
-            email: formData.email,
-            phone: formData.phone,
-            ca_level: formData.caLevel,
-            attempt_details: formData.attemptDetails,
-          },
-          batch: currentBatchObj,
-          whatsapp_link: currentBatchObj?.whatsapp_link || 'https://chat.whatsapp.com/BeAGTr1Q7t63W8PBqXxnS5',
-          receipt: {
-            receiptNumber: `UN-${Date.now().toString().slice(-6)}`,
-            amount: currentBatchObj?.fee || 999,
-            date: new Date().toLocaleDateString('en-IN'),
-            paymentMethod: 'Card / NetBanking',
-          },
-        };
+        throw new Error(verifyJson?.error || 'Payment verification could not be confirmed.');
       }
 
       // Success! Pass to parent for Success Screen
@@ -235,66 +203,33 @@ export const RegistrationModal: React.FC<RegistrationModalProps> = ({
     setErrorMsg(null);
 
     try {
-      let verifyJson: any = null;
-      try {
-        const verifyRes = await fetch('/api/payments/verify', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            fullName: formData.fullName,
-            email: formData.email,
-            phone: formData.phone,
-            caLevel: formData.caLevel,
-            attemptDetails: formData.attemptDetails,
-            batchId: formData.batchId,
-            amount: currentBatchObj?.fee || 999,
-            paymentMethod: 'UPI',
-            upiUtr: cleanUtr,
-            razorpay_payment_id: `UPI_${cleanUtr}`,
-            razorpay_order_id: orderData?.orderId || `order_upi_${Date.now()}`,
-            razorpay_signature: 'upi_submitted',
-          }),
-        });
-        if (verifyRes.ok) {
-          verifyJson = await verifyRes.json();
-        }
-      } catch (netErr) {
-        console.warn('UPI Verify API unreachable, generating client fallback:', netErr);
+      const verifyRes = await fetch('/api/payments/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          fullName: formData.fullName,
+          email: formData.email,
+          phone: formData.phone,
+          caLevel: formData.caLevel,
+          attemptDetails: formData.attemptDetails,
+          batchId: formData.batchId,
+          amount: currentBatchObj?.fee || 999,
+          paymentMethod: 'UPI',
+          upiUtr: cleanUtr,
+          razorpay_payment_id: `UPI_${cleanUtr}`,
+          razorpay_order_id: orderData?.orderId || `order_upi_${Date.now()}`,
+          razorpay_signature: 'upi_submitted',
+        }),
+      });
+
+      if (!verifyRes.ok) {
+        const errData = await verifyRes.json().catch(() => ({}));
+        throw new Error(errData.error || 'UPI payment submission failed.');
       }
 
+      const verifyJson = await verifyRes.json();
       if (!verifyJson || !verifyJson.success) {
-        const fallbackRegId = `reg-${Date.now().toString(36)}`;
-        const fallbackStudentId = `stu-${Date.now().toString(36)}`;
-        verifyJson = {
-          success: true,
-          registration: {
-            id: fallbackRegId,
-            student_id: fallbackStudentId,
-            batch_id: formData.batchId,
-            status: 'confirmed',
-            amount_paid: currentBatchObj?.fee || 999,
-            payment_status: 'paid',
-            whatsapp_link_sent: true,
-            created_at: new Date().toISOString(),
-          },
-          student: {
-            id: fallbackStudentId,
-            name: formData.fullName,
-            email: formData.email,
-            phone: formData.phone,
-            ca_level: formData.caLevel,
-            attempt_details: formData.attemptDetails,
-          },
-          batch: currentBatchObj,
-          whatsapp_link: currentBatchObj?.whatsapp_link || 'https://chat.whatsapp.com/BeAGTr1Q7t63W8PBqXxnS5',
-          receipt: {
-            receiptNumber: `UN-${Date.now().toString().slice(-6)}`,
-            amount: currentBatchObj?.fee || 999,
-            date: new Date().toLocaleDateString('en-IN'),
-            paymentMethod: 'UPI',
-            utrNumber: cleanUtr,
-          },
-        };
+        throw new Error(verifyJson?.error || 'Payment verification record could not be saved.');
       }
 
       onPaymentSuccess(verifyJson);

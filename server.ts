@@ -10,20 +10,52 @@ import { emailService, GOOGLE_DRIVE_RESOURCES_LINK } from './server/email.js';
 dotenv.config();
 
 const app = express();
-const PORT = process.env.HOSTINGER_PORT ? parseInt(process.env.HOSTINGER_PORT, 10) : 3000;
+const PORT = 3000;
 
 app.use(express.json({ limit: '25mb' }));
 app.use(express.urlencoded({ extended: true, limit: '25mb' }));
 
-// Simple admin auth middleware
-const ADMIN_TOKEN = 'umbrella_admin_secret_token_2026';
+// Production Admin Session & Authentication Management
+const activeAdminSessions = new Map<string, { username: string; email: string; createdAt: number; expiresAt: number }>();
+const FALLBACK_ADMIN_TOKEN = process.env.ADMIN_TOKEN || 'umbrella_admin_secret_token_2026';
+
 function requireAdmin(req: Request, res: Response, next: () => void) {
   const authHeader = req.headers['authorization'] || req.headers['x-admin-token'];
-  const token = typeof authHeader === 'string' ? authHeader.replace('Bearer ', '') : '';
-  if (token === ADMIN_TOKEN || token === (process.env.ADMIN_TOKEN || ADMIN_TOKEN)) {
+  let token = typeof authHeader === 'string' ? authHeader.replace(/^Bearer\s+/i, '').trim() : '';
+
+  if (!token && req.headers.cookie) {
+    const cookies = req.headers.cookie.split(';');
+    for (const c of cookies) {
+      const [k, v] = c.trim().split('=');
+      if (k === 'admin_session' && v) {
+        token = decodeURIComponent(v);
+        break;
+      }
+    }
+  }
+
+  if (!token) {
+    return res.status(401).json({ error: 'Unauthorized. Admin session token required.' });
+  }
+
+  // Check in-memory active session
+  const session = activeAdminSessions.get(token);
+  if (session) {
+    if (Date.now() > session.expiresAt) {
+      activeAdminSessions.delete(token);
+      return res.status(401).json({ error: 'Admin session has expired. Please log in again.' });
+    }
+    (req as any).adminUser = session;
     return next();
   }
-  return res.status(401).json({ error: 'Unauthorized. Admin access required.' });
+
+  // Check environment-configured static token
+  if (token === FALLBACK_ADMIN_TOKEN || (process.env.ADMIN_TOKEN && token === process.env.ADMIN_TOKEN)) {
+    (req as any).adminUser = { username: process.env.ADMIN_USERNAME || 'admin', email: process.env.ADMIN_EMAIL || 'caumbrellanetwork@gmail.com' };
+    return next();
+  }
+
+  return res.status(401).json({ error: 'Invalid admin credentials or session expired.' });
 }
 
 // ----------------------------------------------------
@@ -485,6 +517,91 @@ app.post('/api/payments/verify', async (req: Request, res: Response) => {
   }
 });
 
+// Razorpay Webhooks Handler for automatic payment confirmation & seat reservation
+const processedWebhooks = new Set<string>();
+
+app.post('/api/payments/webhook', async (req: Request, res: Response) => {
+  try {
+    const webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET;
+    const webhookSignature = req.headers['x-razorpay-signature'] as string;
+
+    // Verify cryptographic signature if secret configured
+    if (webhookSecret && webhookSignature) {
+      const payloadString = JSON.stringify(req.body);
+      const expectedSignature = crypto
+        .createHmac('sha256', webhookSecret)
+        .update(payloadString)
+        .digest('hex');
+
+      if (expectedSignature !== webhookSignature) {
+        console.warn('[Webhook] Signature verification mismatch');
+        return res.status(400).json({ error: 'Invalid webhook signature' });
+      }
+    }
+
+    const event = req.body;
+    const eventId = event?.id || `${event?.event}_${event?.payload?.payment?.entity?.id || Date.now()}`;
+
+    // Idempotency guard: prevent duplicate processing
+    if (processedWebhooks.has(eventId)) {
+      return res.json({ status: 'ok', message: 'Event already handled' });
+    }
+    processedWebhooks.add(eventId);
+
+    if (event?.event === 'payment.captured' || event?.event === 'order.paid') {
+      const paymentEntity = event?.payload?.payment?.entity;
+      const notes = paymentEntity?.notes || {};
+      const studentEmail = notes?.student_email || paymentEntity?.email;
+      const studentName = notes?.student_name || 'Student';
+      const batchId = notes?.batch_id;
+
+      if (studentEmail && batchId) {
+        const batch = db.getBatchById(batchId, true);
+        if (batch) {
+          const existing = db.getRegistrations().find(r => r.payment_id === paymentEntity.id || (r.student_email === studentEmail && r.batch_id === batchId));
+          if (!existing) {
+            const regResult = db.registerStudentAndPayment({
+              fullName: studentName,
+              email: studentEmail,
+              phone: paymentEntity?.contact || notes?.student_phone || '',
+              caLevel: notes?.ca_level || 'CA Inter',
+              batchId,
+              amount: (paymentEntity?.amount ? paymentEntity.amount / 100 : batch.fee) || 999,
+              paymentId: paymentEntity.id,
+              orderId: paymentEntity.order_id || `order_wh_${Date.now()}`,
+              signature: 'webhook_verified',
+              paymentMethod: 'Razorpay Webhook',
+            });
+
+            if (regResult.success && regResult.registration) {
+              const savedReg = regResult.registration;
+              emailService
+                .sendRegistrationAcknowledgment({
+                  studentName: savedReg.student_name,
+                  studentEmail: savedReg.student_email,
+                  batchNumber: savedReg.batch_number,
+                  batchName: savedReg.batch_name,
+                  batchDate: savedReg.batch_date,
+                  registrationNumber: savedReg.registration_number,
+                  paymentId: paymentEntity.id,
+                  amount: savedReg.amount,
+                  whatsappLink: regResult.whatsappLink || '',
+                  driveResourcesLink: GOOGLE_DRIVE_RESOURCES_LINK,
+                })
+                .catch(err => console.error('[Webhook] Failed to dispatch acknowledgment email:', err));
+            }
+          }
+        }
+      }
+    }
+
+    res.json({ status: 'ok', received: true });
+  } catch (err: any) {
+    console.error('[Webhook] Error handling webhook event:', err);
+    res.status(500).json({ error: 'Webhook processing error' });
+  }
+});
+
 // Retrieve verified registration info & batch WhatsApp link
 app.get('/api/registration/:id', (req: Request, res: Response) => {
   const reg = db.getRegistrationById(req.params.id);
@@ -557,6 +674,72 @@ app.get('/api/registrations/status', (req: Request, res: Response) => {
       driveResourcesLink: isVerified ? GOOGLE_DRIVE_RESOURCES_LINK : undefined,
     },
   });
+});
+
+// Secure Resource Access Portal with Token Validation
+app.get('/api/resources/:token', (req: Request, res: Response) => {
+  const token = req.params.token.trim();
+  const registrations = db.getRegistrations();
+  const match = registrations.find(
+    r =>
+      r.id.toLowerCase() === token.toLowerCase() ||
+      r.registration_number.toLowerCase() === token.toLowerCase() ||
+      (r.payment_id && r.payment_id.toLowerCase() === token.toLowerCase()) ||
+      (r.upi_utr && r.upi_utr === token)
+  );
+
+  if (!match) {
+    return res.status(404).send(`
+      <!DOCTYPE html>
+      <html lang="en">
+        <head>
+          <meta charset="UTF-8">
+          <title>Resource Access - The Umbrella Network</title>
+          <meta name="viewport" content="width=device-width, initial-scale=1.0">
+          <script src="https://cdn.tailwindcss.com"></script>
+        </head>
+        <body class="bg-slate-950 text-slate-100 min-h-screen flex items-center justify-center p-4">
+          <div class="max-w-md w-full bg-slate-900 border border-slate-800 rounded-3xl p-8 text-center shadow-2xl">
+            <div class="w-16 h-16 bg-red-500/10 text-red-400 rounded-2xl flex items-center justify-center mx-auto mb-4 border border-red-500/20 text-2xl font-bold">✕</div>
+            <h1 class="text-xl font-black text-white">Invalid or Expired Access Token</h1>
+            <p class="text-sm text-slate-400 mt-2">No verified enrollment record was found for this token. If you enrolled recently, please check your registration email.</p>
+            <a href="/" class="mt-6 inline-block w-full py-3 px-6 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-xl transition text-sm">Back to Masterclass</a>
+          </div>
+        </body>
+      </html>
+    `);
+  }
+
+  if (match.status !== 'verified') {
+    return res.status(403).send(`
+      <!DOCTYPE html>
+      <html lang="en">
+        <head>
+          <meta charset="UTF-8">
+          <title>Verification Pending - The Umbrella Network</title>
+          <meta name="viewport" content="width=device-width, initial-scale=1.0">
+          <script src="https://cdn.tailwindcss.com"></script>
+        </head>
+        <body class="bg-slate-950 text-slate-100 min-h-screen flex items-center justify-center p-4">
+          <div class="max-w-md w-full bg-slate-900 border border-slate-800 rounded-3xl p-8 text-center shadow-2xl">
+            <div class="w-16 h-16 bg-amber-500/10 text-amber-400 rounded-2xl flex items-center justify-center mx-auto mb-4 border border-amber-500/20 text-2xl font-bold">⏳</div>
+            <h1 class="text-xl font-black text-white">Payment Verification in Progress</h1>
+            <p class="text-sm text-slate-400 mt-2">Your enrollment (${match.registration_number}) is awaiting bank reconciliation. Drive materials and WhatsApp group invite unlock immediately upon verification.</p>
+            <a href="/" class="mt-6 inline-block w-full py-3 px-6 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-xl transition text-sm">Check Status on Website</a>
+          </div>
+        </body>
+      </html>
+    `);
+  }
+
+  // Audit resource access event
+  db.trackEvent('resource_download_redirect', {
+    registrationNumber: match.registration_number,
+    studentEmail: match.student_email,
+    batchNumber: match.batch_number,
+  });
+
+  return res.redirect(GOOGLE_DRIVE_RESOURCES_LINK);
 });
 
 // Admin: Approve Pending UPI Registration
@@ -684,16 +867,69 @@ app.post('/api/admin/emails/resend', requireAdmin, async (req: Request, res: Res
 app.post('/api/admin/login', (req: Request, res: Response) => {
   const { username, password } = req.body;
   const validUser = process.env.ADMIN_USERNAME || 'admin';
-  const validPass = process.env.ADMIN_PASSWORD_HASH || 'admin123';
+  const validPass = process.env.ADMIN_PASSWORD || process.env.ADMIN_PASSWORD_HASH || 'admin123';
 
   if (username === validUser && password === validPass) {
+    const sessionToken = `adm_sess_${crypto.randomBytes(24).toString('hex')}`;
+    const expiresAt = Date.now() + 24 * 60 * 60 * 1000;
+    const adminData = {
+      username: validUser,
+      email: process.env.ADMIN_EMAIL || 'caumbrellanetwork@gmail.com',
+      createdAt: Date.now(),
+      expiresAt,
+    };
+    activeAdminSessions.set(sessionToken, adminData);
+
+    res.cookie('admin_session', sessionToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax',
+      maxAge: 86400000,
+    });
+
     return res.json({
       success: true,
-      token: ADMIN_TOKEN,
-      admin: { username: validUser, email: process.env.ADMIN_EMAIL || 'caumbrellanetwork@gmail.com' },
+      token: sessionToken,
+      admin: { username: validUser, email: adminData.email },
     });
   }
   return res.status(401).json({ error: 'Invalid admin credentials.' });
+});
+
+// Admin Me / Current Profile
+app.get('/api/admin/me', requireAdmin, (req: Request, res: Response) => {
+  const adminUser = (req as any).adminUser || {
+    username: process.env.ADMIN_USERNAME || 'admin',
+    email: process.env.ADMIN_EMAIL || 'caumbrellanetwork@gmail.com',
+  };
+  res.json({
+    success: true,
+    admin: {
+      username: adminUser.username,
+      email: adminUser.email,
+    },
+  });
+});
+
+// Admin Logout
+app.post('/api/admin/logout', (req: Request, res: Response) => {
+  const authHeader = req.headers['authorization'] || req.headers['x-admin-token'];
+  let token = typeof authHeader === 'string' ? authHeader.replace(/^Bearer\s+/i, '').trim() : '';
+  if (!token && req.headers.cookie) {
+    const cookies = req.headers.cookie.split(';');
+    for (const c of cookies) {
+      const [k, v] = c.trim().split('=');
+      if (k === 'admin_session' && v) {
+        token = decodeURIComponent(v);
+        break;
+      }
+    }
+  }
+  if (token) {
+    activeAdminSessions.delete(token);
+  }
+  res.clearCookie('admin_session');
+  res.json({ success: true, message: 'Logged out successfully.' });
 });
 
 // Admin Dashboard Overview

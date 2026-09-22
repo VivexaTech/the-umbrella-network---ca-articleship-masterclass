@@ -29,11 +29,13 @@ export interface Payment {
   student_id: string;
   batch_id: string;
   amount: number;
+  currency: string;
   gateway: string;
   payment_id: string;
   order_id: string;
   signature?: string;
   payment_status: 'successful' | 'failed' | 'pending' | 'refunded';
+  upi_utr?: string;
   created_at: string;
 }
 
@@ -42,7 +44,7 @@ export interface Registration {
   registration_number: string;
   student_id: string;
   batch_id: string;
-  payment_id: string;
+  payment_id?: string;
   student_name: string;
   student_email: string;
   student_phone: string;
@@ -53,8 +55,9 @@ export interface Registration {
   amount: number;
   payment_method?: string;
   upi_utr?: string;
-  status?: 'verified' | 'pending_verification' | 'rejected';
+  status: 'confirmed' | 'pending_verification' | 'rejected';
   rejection_reason?: string;
+  whatsapp_link?: string;
   verified_at?: string;
   created_at: string;
 }
@@ -129,7 +132,7 @@ export interface RegistrationFormData {
   email: string;
   phone: string;
   caLevel: string;
-  attemptDetails: string;
+  attemptDetails?: string;
   batchId: string;
 }
 
@@ -147,9 +150,16 @@ export interface PaymentSuccessResponse {
   paymentId: string;
   paymentMethod?: string;
   upiUtr?: string;
-  status?: 'verified' | 'pending_verification' | 'rejected';
+  status: 'confirmed' | 'pending_verification' | 'rejected';
   requiresVerification?: boolean;
-  whatsappLink?: string; // only revealed securely upon confirmed verification
-  driveResourcesLink?: string; // Google Drive folder with all masterclass resources
+  whatsappLink?: string;
+  driveResourcesLink?: string;
   emailSent?: boolean;
+}
+
+export interface AdminUser {
+  id: string;
+  email: string;
+  name: string;
+  role: 'super_admin' | 'admin';
 }
