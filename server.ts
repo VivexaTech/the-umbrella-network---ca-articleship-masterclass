@@ -1262,8 +1262,8 @@ async function start() {
 
 export { app };
 
-// Only boot standalone HTTP listener when not running in a serverless environment (e.g. Netlify Functions)
-if (process.env.NETLIFY !== 'true' && !process.env.AWS_LAMBDA_FUNCTION_NAME && !process.env.LAMBDA_TASK_ROOT) {
+// Only boot standalone HTTP listener when not running in a serverless environment (e.g. Netlify Functions, Vercel Serverless)
+if (process.env.NETLIFY !== 'true' && !process.env.AWS_LAMBDA_FUNCTION_NAME && !process.env.LAMBDA_TASK_ROOT && process.env.VERCEL !== '1' && process.env.VERCEL !== 'true') {
   start();
 }
 
